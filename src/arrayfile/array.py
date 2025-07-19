@@ -118,12 +118,7 @@ class Array:
         if len(header_data) < self.HEADER_SIZE:
             return False
 
-        try:
-            magic, version, dtype_len, dtype_bytes, element_size, length = struct.unpack(
-                self.HEADER_FORMAT, header_data
-            )
-        except struct.error:
-            return False
+        magic, version, dtype_len, dtype_bytes, element_size, length = struct.unpack(self.HEADER_FORMAT, header_data)
 
         if magic != self.MAGIC:
             return False

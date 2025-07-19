@@ -6,4 +6,5 @@ dist
 coverage.json
 *.log
 *.prof
-.log.pid
+*.txt
+docs/pydoc
