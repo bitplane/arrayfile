@@ -9,6 +9,14 @@ import weakref
 class Array:
     CHUNK_SIZE_BYTES = 4096
 
+    # Header constants
+    MAGIC = b"ARYF"
+    HEADER_VERSION = 1
+    HEADER_SIZE = 32
+    HEADER_FORMAT = (
+        "<4sHB8sIQ5x"  # magic(4), version(2), dtype_len(1), dtype(8), element_size(4), length(8), reserved(5)
+    )
+
     def __init__(self, dtype, filename=None, mode="r+b", initial_elements=0):
         self._lock = threading.Lock()
 
@@ -26,20 +34,25 @@ class Array:
         self._len = 0
         self._capacity = 0
         self._capacity_bytes = 0  # Initialize _capacity_bytes here
+        self._data_offset = self.HEADER_SIZE  # All data starts after header
 
         if "w" in mode or not os.path.exists(filename):
             # Create or truncate file
             self._file = open(filename, "w+b")
             self._len = 0
             self._allocate_capacity(initial_elements)
+            self._write_header()
         else:
             # Open existing file
             self._file = open(filename, mode)
-            current_file_size = os.fstat(self._file.fileno()).st_size
-            self._len = current_file_size // self._element_size  # Actual number of elements
+            if not self._read_header():
+                raise ValueError("File does not have a valid array header")
 
-            # Calculate capacity based on current file size and ensure chunk alignment
-            min_elements = (current_file_size + self._element_size - 1) // self._element_size
+            current_file_size = os.fstat(self._file.fileno()).st_size
+            data_size = current_file_size - self.HEADER_SIZE
+
+            # Calculate capacity based on current data size and ensure chunk alignment
+            min_elements = (data_size + self._element_size - 1) // self._element_size
             self._allocate_capacity(min_elements)
 
         # Only mmap if the file has a non-zero size
@@ -78,13 +91,66 @@ class Array:
         except struct.error as e:
             raise TypeError(f"Value {value} cannot be packed as {self._dtype_format}: {e}")
 
+    def _write_header(self):
+        """Write header to the beginning of the file."""
+        dtype_bytes = self._dtype.encode("ascii")[:8]  # Limit to 8 bytes
+        dtype_bytes = dtype_bytes.ljust(8, b"\x00")  # Pad with nulls
+
+        header = struct.pack(
+            self.HEADER_FORMAT,
+            self.MAGIC,
+            self.HEADER_VERSION,
+            len(self._dtype),
+            dtype_bytes,
+            self._element_size,
+            self._len,
+        )
+
+        self._file.seek(0)
+        self._file.write(header)
+        self._file.flush()
+
+    def _read_header(self):
+        """Read and validate header from file. Returns True if valid header, False if no header."""
+        self._file.seek(0)
+        header_data = self._file.read(self.HEADER_SIZE)
+
+        if len(header_data) < self.HEADER_SIZE:
+            return False
+
+        try:
+            magic, version, dtype_len, dtype_bytes, element_size, length = struct.unpack(
+                self.HEADER_FORMAT, header_data
+            )
+        except struct.error:
+            return False
+
+        if magic != self.MAGIC:
+            return False
+
+        if version != self.HEADER_VERSION:
+            raise ValueError(f"Unsupported header version: {version}")
+
+        # Extract dtype string
+        dtype = dtype_bytes[:dtype_len].decode("ascii")
+
+        # Validate dtype matches
+        if dtype != self._dtype:
+            raise ValueError(f"File dtype '{dtype}' does not match requested dtype '{self._dtype}'")
+
+        if element_size != self._element_size:
+            raise ValueError(f"File element size {element_size} does not match expected {self._element_size}")
+
+        self._len = length
+        return True
+
     def __getitem__(self, index):
         index = self._validate_index(index)
 
         if not self._mmap:
             raise RuntimeError("Array is not memory-mapped. This should not happen if len > 0.")
 
-        offset = index * self._element_size
+        offset = self._data_offset + index * self._element_size
         data = self._mmap[offset : offset + self._element_size]
         return struct.unpack(self._dtype_format, data)[0]
 
@@ -95,7 +161,7 @@ class Array:
             if not self._mmap:
                 raise RuntimeError("Array is not memory-mapped. This should not happen if len > 0.")
 
-            offset = index * self._element_size
+            offset = self._data_offset + index * self._element_size
             packed_value = self._pack_value(value)
             self._mmap[offset : offset + self._element_size] = packed_value
 
@@ -104,24 +170,20 @@ class Array:
             if self._len == self._capacity:
                 self._resize(self._len + 1)
 
-            offset = self._len * self._element_size
+            offset = self._data_offset + self._len * self._element_size
             packed_value = self._pack_value(value)
-
-            if not self._mmap:
-                # This happens when initial_elements=0 and we're appending first element
-                self._allocate_capacity(1)
-                self._mmap = mmap.mmap(self._file.fileno(), 0)
 
             self._mmap[offset : offset + self._element_size] = packed_value
             self._len += 1
 
     def _allocate_capacity(self, min_elements):
         """Allocate capacity for at least min_elements, rounded up to chunk boundary."""
-        bytes_needed = min_elements * self._element_size
+        bytes_needed = min_elements * self._element_size + self.HEADER_SIZE
         chunks_needed = (bytes_needed + self.CHUNK_SIZE_BYTES - 1) // self.CHUNK_SIZE_BYTES
-        self._capacity_bytes = chunks_needed * self.CHUNK_SIZE_BYTES
+        total_file_size = chunks_needed * self.CHUNK_SIZE_BYTES
+        self._capacity_bytes = total_file_size - self.HEADER_SIZE
         self._capacity = self._capacity_bytes // self._element_size
-        self._file.truncate(self._capacity_bytes)
+        self._file.truncate(total_file_size)
 
     def _resize(self, min_new_len):
         if self._mmap:
@@ -143,7 +205,7 @@ class Array:
                 self._resize(new_len)
 
             # Batch write all values directly to mmap
-            offset = self._len * self._element_size
+            offset = self._data_offset + self._len * self._element_size
             for value in values:
                 packed_value = self._pack_value(value)
                 self._mmap[offset : offset + self._element_size] = packed_value
@@ -186,8 +248,8 @@ class Array:
                     self._resize(new_total_len)
 
                 # Copy data in-place
-                src_offset = 0
-                dst_offset = original_len * self._element_size
+                src_offset = self._data_offset
+                dst_offset = self._data_offset + original_len * self._element_size
 
                 for _ in range(value - 1):
                     # Copy the original data chunk
@@ -210,12 +272,15 @@ class Array:
             self._mmap = None
 
         if self._file:
+            # Update header with final length
+            self._write_header()
+
             # Only truncate if the file was opened in a writable mode
             # and if the current size is greater than the actual data length
             current_file_size = os.fstat(self._file.fileno()).st_size
-            actual_data_bytes = self._len * self._element_size
-            if current_file_size > actual_data_bytes:
-                self._file.truncate(actual_data_bytes)
+            actual_total_size = self.HEADER_SIZE + self._len * self._element_size
+            if current_file_size > actual_total_size:
+                self._file.truncate(actual_total_size)
             self._file.close()
             self._file = None
 

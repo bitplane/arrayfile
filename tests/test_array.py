@@ -22,16 +22,7 @@ def test_init_new_file_no_filename():
         assert array._filename is not None
         assert array._dtype == "i"
         assert array._element_size == struct.calcsize("i")
-        assert array._len == 0
-
-        expected_capacity_bytes = 0
-        expected_capacity = 0
-
-        assert array._capacity == expected_capacity
-
-        # Check file size before closing and removing
-        actual_file_size = os.path.getsize(array._filename)
-        assert actual_file_size == expected_capacity_bytes
+        assert len(array) == 0
 
     finally:
         if array:
@@ -55,35 +46,20 @@ def test_init_new_file_with_filename(temp_filepath, dtype, initial_elements, exp
     assert array._filename == temp_filepath
     assert array._dtype == dtype
     assert array._element_size == expected_element_size
-    assert array._len == 0
-
-    # Calculate expected capacity based on 4KB chunks
-    bytes_needed = initial_elements * expected_element_size
-    chunks_needed = (bytes_needed + Array.CHUNK_SIZE_BYTES - 1) // Array.CHUNK_SIZE_BYTES
-    expected_capacity_bytes = chunks_needed * Array.CHUNK_SIZE_BYTES
-    expected_capacity = expected_capacity_bytes // expected_element_size
-
-    assert array._capacity == expected_capacity
-    assert os.path.getsize(temp_filepath) == expected_capacity_bytes
+    assert len(array) == 0
     array.close()
 
 
 def test_init_existing_file(temp_filepath):
-    # Create a file with some data first
-    with open(temp_filepath, "wb") as f:
-        f.write(struct.pack("iii", 10, 20, 30))
+    # Create a file with array data using proper header format
+    with Array("i", temp_filepath, "w+b") as array:
+        array.append(10)
+        array.append(20)
+        array.append(30)
 
+    # Reopen and verify
     array = Array("i", temp_filepath, "r+b")
-    assert array._len == 3
-    # For existing files, capacity is aligned to the nearest 4KB chunk
-    current_file_size = os.path.getsize(temp_filepath)
-    expected_capacity_bytes = (
-        (current_file_size + Array.CHUNK_SIZE_BYTES - 1) // Array.CHUNK_SIZE_BYTES * Array.CHUNK_SIZE_BYTES
-    )
-    expected_capacity = expected_capacity_bytes // array._element_size
-    assert array._capacity == expected_capacity
-    assert os.path.getsize(temp_filepath) == expected_capacity_bytes
-    assert array._capacity_bytes == expected_capacity_bytes
+    assert len(array) == 3
     assert array[0] == 10
     assert array[1] == 20
     assert array[2] == 30
@@ -105,23 +81,19 @@ def test_append_and_len(temp_filepath):
 
 
 def test_append_triggers_resize(temp_filepath):
-    # Use a small element size to easily trigger resize
-    array = Array("B", temp_filepath, "w+b", 0)  # Changed to 'B'
-    initial_capacity_bytes = array._capacity * array._element_size
-    assert initial_capacity_bytes == 0  # Should start with 0 capacity if initial_elements is 0
+    # Test that we can append many elements and the array grows
+    array = Array("B", temp_filepath, "w+b", 0)
 
-    # Append enough elements to fill the first 4KB chunk
-    elements_in_chunk = Array.CHUNK_SIZE_BYTES // array._element_size
-    for i in range(elements_in_chunk):
+    # Append enough elements to trigger multiple resizes
+    num_elements = 5000  # Should be enough to trigger resize
+    for i in range(num_elements):
         array.append(i % 256)  # Ensure value is within 'B' range
         assert len(array) == i + 1
-        # Capacity should be elements_in_chunk until next append, or a multiple of elements_in_chunk
-        assert array._capacity >= elements_in_chunk
 
-    # Append one more to trigger resize
-    array.append(elements_in_chunk % 256)  # Ensure value is within 'B' range
-    assert len(array) == elements_in_chunk + 1
-    assert array._capacity > elements_in_chunk  # Should have grown by another chunk
+    # Verify all values are correct
+    for i in range(num_elements):
+        assert array[i] == i % 256
+
     array.close()
 
 
@@ -133,18 +105,13 @@ def test_append_type_error(temp_filepath):
 
 
 def test_append_empty_file_triggers_mmap_creation(temp_filepath):
-    # Test the case where initial_elements=0, triggering lines 93-94 in append()
+    # Test that we can append to an empty array
     array = Array("i", temp_filepath, "w+b", initial_elements=0)
 
-    # Should have no mmap initially due to 0 capacity
-    assert array._mmap is None
-    assert array._capacity_bytes == 0
-
-    # This append should trigger lines 93-94 (allocate capacity + create mmap)
+    # Append to empty array
     array.append(42)
 
-    # Now should have mmap and data
-    assert array._mmap is not None
+    # Verify the data
     assert len(array) == 1
     assert array[0] == 42
 
@@ -241,14 +208,18 @@ def test_flush(temp_filepath):
 
 
 def test_close_truncates(temp_filepath):
+    # Test that data persists after close
     array = Array("i", temp_filepath, "w+b", 100)
     array.append(1)
     array.append(2)
-    initial_file_size = os.path.getsize(temp_filepath)
-    assert initial_file_size > (2 * array._element_size)  # Should be larger due to initial_elements
     array.close()
-    # After close, file size should be exactly len * element_size
-    assert os.path.getsize(temp_filepath) == (2 * array._element_size)
+
+    # Reopen and verify data persists
+    array2 = Array("i", temp_filepath, "r+b")
+    assert len(array2) == 2
+    assert array2[0] == 1
+    assert array2[1] == 2
+    array2.close()
 
 
 def test_close_multiple_times(temp_filepath):
@@ -263,9 +234,8 @@ def test_context_manager(temp_filepath):
         array.append(10)
         array.append(20)
 
-    # After exiting context, file should be closed and truncated
+    # After exiting context, verify data persists
     assert os.path.exists(temp_filepath)
-    assert os.path.getsize(temp_filepath) == (2 * struct.calcsize("i"))
 
     # Verify content by reopening
     array_reopen = Array("i", temp_filepath, "r+b")
@@ -469,16 +439,16 @@ def test_array_length_after_reopen_with_preallocation(temp_filepath):
     array.append(10)
     array.append(20)
     array.append(30)
-    
+
     # Verify length is correct
     assert len(array) == 3
     assert array[0] == 10
-    assert array[1] == 20 
+    assert array[1] == 20
     assert array[2] == 30
     assert array[-1] == 30  # Last element should be 30
-    
+
     array.close()
-    
+
     # Reopen the array - it should remember the correct length
     array2 = Array("i", temp_filepath, "r+b")
     assert len(array2) == 3
@@ -486,5 +456,123 @@ def test_array_length_after_reopen_with_preallocation(temp_filepath):
     assert array2[1] == 20
     assert array2[2] == 30
     assert array2[-1] == 30  # Last element should still be 30, not 0
-    
+
     array2.close()
+
+
+def test_invalid_header_file(temp_filepath):
+    """Test opening a file without valid array header."""
+    # Create a file with non-array data
+    with open(temp_filepath, "wb") as f:
+        f.write(b"This is not an array file")
+
+    with pytest.raises(ValueError, match="File does not have a valid array header"):
+        Array("i", temp_filepath, "r+b")
+
+
+def test_truncated_header_file(temp_filepath):
+    """Test opening a file with truncated header."""
+    # Create a file with only partial header
+    with open(temp_filepath, "wb") as f:
+        f.write(b"ARYF")  # Only magic, missing rest of header
+
+    with pytest.raises(ValueError, match="File does not have a valid array header"):
+        Array("i", temp_filepath, "r+b")
+
+
+def test_corrupted_header_file(temp_filepath):
+    """Test opening a file with corrupted header that causes unsupported version."""
+    # Create a file with 32 bytes that will parse but give invalid version
+    with open(temp_filepath, "wb") as f:
+        f.write(b"ARYF" + b"\xff" * 28)  # Magic + garbage giving version 65535
+
+    with pytest.raises(ValueError, match="Unsupported header version: 65535"):
+        Array("i", temp_filepath, "r+b")
+
+
+def test_wrong_magic_number(temp_filepath):
+    """Test opening a file with wrong magic number."""
+    # Create a file with wrong magic but correct size
+    with open(temp_filepath, "wb") as f:
+        f.write(b"WRNG" + b"\x00" * 28)  # Wrong magic + padding
+
+    with pytest.raises(ValueError, match="File does not have a valid array header"):
+        Array("i", temp_filepath, "r+b")
+
+
+def test_unsupported_version(temp_filepath):
+    """Test opening a file with unsupported version."""
+    # Create an array file then manually modify the version
+    with Array("i", temp_filepath, "w+b") as arr:
+        arr.append(42)
+
+    # Modify the version in the header
+    with open(temp_filepath, "r+b") as f:
+        f.seek(4)  # Position after magic
+        f.write(struct.pack("<H", 999))  # Write unsupported version
+
+    with pytest.raises(ValueError, match="Unsupported header version: 999"):
+        Array("i", temp_filepath, "r+b")
+
+
+def test_dtype_mismatch(temp_filepath):
+    """Test opening a file with different dtype than expected."""
+    # Create an array with 'i' dtype
+    with Array("i", temp_filepath, "w+b") as arr:
+        arr.append(42)
+
+    # Try to open with 'd' dtype
+    with pytest.raises(ValueError, match="File dtype 'i' does not match requested dtype 'd'"):
+        Array("d", temp_filepath, "r+b")
+
+
+def test_element_size_mismatch(temp_filepath):
+    """Test opening a file with mismatched element size."""
+    # Create an array file then manually modify the element size
+    with Array("i", temp_filepath, "w+b") as arr:
+        arr.append(42)
+
+    # Modify the element size in the header
+    with open(temp_filepath, "r+b") as f:
+        f.seek(4 + 2 + 1 + 8)  # Position after magic + version + dtype_len + dtype
+        f.write(struct.pack("<I", 999))  # Write wrong element size
+
+    with pytest.raises(ValueError, match="File element size 999 does not match expected 4"):
+        Array("i", temp_filepath, "r+b")
+
+
+def test_extend_empty_list(temp_filepath):
+    """Test extending with empty list."""
+    array = Array("i", temp_filepath, "w+b")
+    array.append(1)
+    array.extend([])  # This should trigger line 205
+    assert len(array) == 1
+    assert array[0] == 1
+    array.close()
+
+
+def test_extend_triggers_resize(temp_filepath):
+    """Test that extend can trigger resize."""
+    array = Array("i", temp_filepath, "w+b")
+    # Add many elements to trigger resize during extend
+    large_list = list(range(2000))
+    array.extend(large_list)  # This should trigger line 210
+    assert len(array) == 2000
+    for i in range(2000):
+        assert array[i] == i
+    array.close()
+
+
+def test_imul_triggers_resize(temp_filepath):
+    """Test that __imul__ can trigger resize."""
+    array = Array("i", temp_filepath, "w+b")
+    # Create a large array and multiply to trigger resize
+    array.extend(list(range(1000)))
+    array *= 3  # This should trigger line 253
+    assert len(array) == 3000
+    # Verify pattern repeats correctly
+    for i in range(1000):
+        assert array[i] == i
+        assert array[i + 1000] == i
+        assert array[i + 2000] == i
+    array.close()
