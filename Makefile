@@ -1,6 +1,6 @@
 # the things that don't have output files or run every time
-.PHONY: help all install test dev coverage clean log-stop \
-		pre-commit update-pre-commit
+.PHONY: help all install test dev coverage clean \
+		pre-commit update-pre-commit docs
 
 
 PROJECT_NAME := arrayfile
@@ -18,28 +18,21 @@ test: .venv/.installed-dev  ## run the project's tests
 coverage: .venv/.installed-dev scripts/coverage.sh  ## build the html coverage report
 	scripts/coverage.sh $(PROJECT_NAME)
 
-docs: .docs/index.html ## build the documentation
+docs: .venv/.installed-dev scripts/docs.sh docs/index.md README.md pyproject.toml ## build the documentation
+	scripts/docs.sh
 
 clean:  ## delete caches and the venv
 	scripts/clean.sh
-
-.log.pid log.log.log: scripts/log_log_log.sh  ## create log.log.log from system logs
-	scripts/log_log_log.sh
-
-log: .log.pid  ## create log.log.log from system logs
-
-log-stop:  ## stop the live log tail process
-	scripts/log_log_log.sh -k
 
 pre-commit: .git/hooks/pre-commit  ## install pre-commit into the git repo
 
 update-pre-commit: scripts/update-pre-commit.sh  ## autoupdate pre-commit
 	scripts/update-pre-commit.sh
 
-dist: scripts/dist.sh  ## build the distributable files
-	scripts/dist.sh $(PROJECT_NAME)
+dist: scripts/dist.sh pyproject.toml ## build the distributable files
+	scripts/dist.sh
 
-release: scripts/release.sh  ## publish to pypi
+release: scripts/release.sh ## publish to pypi
 	scripts/release.sh $(PROJECT_NAME)
 
 # Caching doesn't work if we depend on PHONY targets
@@ -60,5 +53,5 @@ release: scripts/release.sh  ## publish to pypi
 	scripts/install-pre-commit.sh
 
 
-help:  ## Show this help
+help: ## Show this help
 	@egrep -h '\s##\s' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'

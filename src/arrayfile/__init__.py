@@ -1,8 +1,4 @@
-"""LogLogLog - Efficient scrollback indexing for large log files."""
-
-import logging
-import sys
-
+"""arrayfile - Memory-mapped array implementation for efficient file-backed arrays."""
 
 from .array import Array
 

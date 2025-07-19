@@ -2,6 +2,7 @@ import mmap
 import os
 import struct
 import tempfile
+import threading
 import weakref
 
 
@@ -9,6 +10,8 @@ class Array:
     CHUNK_SIZE_BYTES = 4096
 
     def __init__(self, dtype, filename=None, mode="r+b", initial_elements=0):
+        self._lock = threading.Lock()
+
         if filename is None:
             fd, filename = tempfile.mkstemp()
             os.close(fd)
@@ -42,7 +45,7 @@ class Array:
         # Only mmap if the file has a non-zero size
         if self._capacity_bytes > 0:
             self._mmap = mmap.mmap(self._file.fileno(), 0)
-            
+
         # Set up finalizer to ensure cleanup even if close() isn't called
         self._finalizer = weakref.finalize(self, self.close)
 
@@ -54,7 +57,8 @@ class Array:
         for i in range(current_len):
             yield self[i]
 
-    def __getitem__(self, index):
+    def _validate_index(self, index):
+        """Validate and normalize an index, returning the normalized value."""
         if not isinstance(index, int):
             raise TypeError("Index must be an integer")
 
@@ -64,6 +68,19 @@ class Array:
 
         if not (0 <= index < self._len):
             raise IndexError("Index out of bounds")
+
+        return index
+
+    def _pack_value(self, value):
+        """Pack a value into bytes according to the dtype format."""
+        try:
+            return struct.pack(self._dtype_format, value)
+        except struct.error as e:
+            raise TypeError(f"Value {value} cannot be packed as {self._dtype_format}: {e}")
+
+    def __getitem__(self, index):
+        index = self._validate_index(index)
+
         if not self._mmap:
             raise RuntimeError("Array is not memory-mapped. This should not happen if len > 0.")
 
@@ -72,43 +89,31 @@ class Array:
         return struct.unpack(self._dtype_format, data)[0]
 
     def __setitem__(self, index, value):
-        if not isinstance(index, int):
-            raise TypeError("Index must be an integer")
+        index = self._validate_index(index)
 
-        # Handle negative indices
-        if index < 0:
-            index = self._len + index
+        with self._lock:
+            if not self._mmap:
+                raise RuntimeError("Array is not memory-mapped. This should not happen if len > 0.")
 
-        if not (0 <= index < self._len):
-            raise IndexError("Index out of bounds")
-        if not self._mmap:
-            raise RuntimeError("Array is not memory-mapped. This should not happen if len > 0.")
-
-        offset = index * self._element_size
-        try:
-            packed_value = struct.pack(self._dtype_format, value)
-        except struct.error as e:
-            raise TypeError(f"Value {value} cannot be packed as {self._dtype_format}: {e}")
-
-        self._mmap[offset : offset + self._element_size] = packed_value
+            offset = index * self._element_size
+            packed_value = self._pack_value(value)
+            self._mmap[offset : offset + self._element_size] = packed_value
 
     def append(self, value):
-        if self._len == self._capacity:
-            self._resize(self._len + 1)
+        with self._lock:
+            if self._len == self._capacity:
+                self._resize(self._len + 1)
 
-        offset = self._len * self._element_size
-        try:
-            packed_value = struct.pack(self._dtype_format, value)
-        except struct.error as e:
-            raise TypeError(f"Value {value} cannot be packed as {self._dtype_format}: {e}")
+            offset = self._len * self._element_size
+            packed_value = self._pack_value(value)
 
-        if not self._mmap:
-            # This happens when initial_elements=0 and we're appending first element
-            self._allocate_capacity(1)
-            self._mmap = mmap.mmap(self._file.fileno(), 0)
+            if not self._mmap:
+                # This happens when initial_elements=0 and we're appending first element
+                self._allocate_capacity(1)
+                self._mmap = mmap.mmap(self._file.fileno(), 0)
 
-        self._mmap[offset : offset + self._element_size] = packed_value
-        self._len += 1
+            self._mmap[offset : offset + self._element_size] = packed_value
+            self._len += 1
 
     def _allocate_capacity(self, min_elements):
         """Allocate capacity for at least min_elements, rounded up to chunk boundary."""
@@ -129,11 +134,22 @@ class Array:
         values = list(iterable)
         num_new_elements = len(values)
 
-        if self._len + num_new_elements > self._capacity:
-            self._resize(self._len + num_new_elements)
+        if num_new_elements == 0:
+            return
 
-        for value in values:
-            self.append(value)
+        with self._lock:
+            new_len = self._len + num_new_elements
+            if new_len > self._capacity:
+                self._resize(new_len)
+
+            # Batch write all values directly to mmap
+            offset = self._len * self._element_size
+            for value in values:
+                packed_value = self._pack_value(value)
+                self._mmap[offset : offset + self._element_size] = packed_value
+                offset += self._element_size
+
+            self._len = new_len
 
     def __contains__(self, value):
         for i in range(self._len):
@@ -151,19 +167,35 @@ class Array:
         if not isinstance(value, int) or value < 0:
             return NotImplemented
 
-        if value == 0:
-            self._len = 0
-            if self._mmap:
-                self._mmap.close()
-                self._mmap = None
-            if self._file:
-                self._file.truncate(0)
-            self._capacity = 0
-            self._capacity_bytes = 0
-        elif value > 1:
-            original_elements = [self[i] for i in range(len(self))]
-            for _ in range(value - 1):
-                self.extend(original_elements)
+        with self._lock:
+            if value == 0:
+                self._len = 0
+                if self._mmap:
+                    self._mmap.close()
+                    self._mmap = None
+                if self._file:
+                    self._file.truncate(0)
+                self._capacity = 0
+                self._capacity_bytes = 0
+            elif value > 1:
+                original_len = self._len
+                new_total_len = original_len * value
+
+                # Resize if needed
+                if new_total_len > self._capacity:
+                    self._resize(new_total_len)
+
+                # Copy data in-place
+                src_offset = 0
+                dst_offset = original_len * self._element_size
+
+                for _ in range(value - 1):
+                    # Copy the original data chunk
+                    chunk_size = original_len * self._element_size
+                    self._mmap[dst_offset : dst_offset + chunk_size] = self._mmap[src_offset : src_offset + chunk_size]
+                    dst_offset += chunk_size
+
+                self._len = new_total_len
         return self
 
     def flush(self):

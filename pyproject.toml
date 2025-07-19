@@ -23,7 +23,6 @@ classifiers = [
 ]
 
 dependencies = [
-    "platformdirs>=3.0"
 ]
 
 [project.optional-dependencies]
