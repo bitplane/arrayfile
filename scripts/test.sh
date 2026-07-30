@@ -2,6 +2,4 @@
 
 source .venv/bin/activate
 
-# Skip first parameter, pass rest to pytest
-shift
-pytest "$@"
+pytest .
