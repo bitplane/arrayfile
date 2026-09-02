@@ -1,4 +1,5 @@
 import pytest
+import io
 import os
 import tempfile
 import struct
@@ -64,6 +65,19 @@ def test_init_existing_file(temp_filepath):
     assert array[1] == 20
     assert array[2] == 30
     array.close()
+
+
+def test_init_existing_file_read_only_does_not_modify_file(temp_filepath):
+    with Array("i", temp_filepath, "w+b") as array:
+        array.extend([10, 20, 30])
+
+    original_size = os.path.getsize(temp_filepath)
+    with Array("i", temp_filepath, "rb") as array:
+        assert list(array) == [10, 20, 30]
+        with pytest.raises(io.UnsupportedOperation, match="not writable"):
+            array.append(40)
+
+    assert os.path.getsize(temp_filepath) == original_size
 
 
 def test_append_and_len(temp_filepath):

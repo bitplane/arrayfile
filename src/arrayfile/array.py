@@ -1,4 +1,5 @@
 import mmap
+import io
 import os
 import struct
 import tempfile
@@ -38,6 +39,7 @@ class Array:
 
         if "w" in mode or not os.path.exists(filename):
             # Create or truncate file
+            mode = "w+b"
             self._file = open(filename, "w+b")
             self._len = 0
             self._allocate_capacity(initial_elements)
@@ -51,13 +53,15 @@ class Array:
             current_file_size = os.fstat(self._file.fileno()).st_size
             data_size = current_file_size - self.HEADER_SIZE
 
-            # Calculate capacity based on current data size and ensure chunk alignment
-            min_elements = (data_size + self._element_size - 1) // self._element_size
-            self._allocate_capacity(min_elements)
+            self._capacity_bytes = data_size
+            self._capacity = data_size // self._element_size
+
+        self._writable = any(flag in mode for flag in "+wa")
 
         # Only mmap if the file has a non-zero size
         if self._capacity_bytes > 0:
-            self._mmap = mmap.mmap(self._file.fileno(), 0)
+            access = mmap.ACCESS_WRITE if self._writable else mmap.ACCESS_READ
+            self._mmap = mmap.mmap(self._file.fileno(), 0, access=access)
 
         # Set up finalizer to ensure cleanup even if close() isn't called
         self._finalizer = weakref.finalize(self, self.close)
@@ -90,6 +94,10 @@ class Array:
             return struct.pack(self._dtype_format, value)
         except struct.error as e:
             raise TypeError(f"Value {value} cannot be packed as {self._dtype_format}: {e}")
+
+    def _ensure_writable(self):
+        if not self._writable:
+            raise io.UnsupportedOperation("Array is not writable")
 
     def _write_header(self):
         """Write header to the beginning of the file."""
@@ -153,6 +161,7 @@ class Array:
         index = self._validate_index(index)
 
         with self._lock:
+            self._ensure_writable()
             if not self._mmap:
                 raise RuntimeError("Array is not memory-mapped. This should not happen if len > 0.")
 
@@ -162,6 +171,7 @@ class Array:
 
     def append(self, value):
         with self._lock:
+            self._ensure_writable()
             if self._len == self._capacity:
                 self._resize(self._len + 1)
 
@@ -195,6 +205,7 @@ class Array:
             return
 
         with self._lock:
+            self._ensure_writable()
             new_len = self._len + num_new_elements
             if new_len > self._capacity:
                 self._resize(new_len)
@@ -225,6 +236,7 @@ class Array:
             return NotImplemented
 
         with self._lock:
+            self._ensure_writable()
             if value == 0:
                 self._len = 0
                 if self._mmap:
@@ -259,7 +271,7 @@ class Array:
         with self._lock:
             if self._mmap:
                 self._mmap.flush()
-            if self._file:
+            if self._file and self._writable:
                 self._write_header()
 
     def close(self):
@@ -271,13 +283,14 @@ class Array:
 
         if self._file:
             # Update header with final length
-            self._write_header()
+            if self._writable:
+                self._write_header()
 
             # Only truncate if the file was opened in a writable mode
             # and if the current size is greater than the actual data length
             current_file_size = os.fstat(self._file.fileno()).st_size
             actual_total_size = self.HEADER_SIZE + self._len * self._element_size
-            if current_file_size > actual_total_size:
+            if self._writable and current_file_size > actual_total_size:
                 self._file.truncate(actual_total_size)
             self._file.close()
             self._file = None
