@@ -52,6 +52,12 @@ class Array:
 
             current_file_size = os.fstat(self._file.fileno()).st_size
             data_size = current_file_size - self.HEADER_SIZE
+            required_data_size = self._len * self._element_size
+            if required_data_size > data_size:
+                raise ValueError(
+                    f"Array header declares {self._len} elements, but file only contains "
+                    f"{data_size // self._element_size}"
+                )
 
             self._capacity_bytes = data_size
             self._capacity = data_size // self._element_size

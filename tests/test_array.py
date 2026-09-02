@@ -568,6 +568,19 @@ def test_element_size_mismatch(temp_filepath):
         Array("i", temp_filepath, "r+b")
 
 
+def test_length_exceeding_file_data_is_rejected(temp_filepath):
+    with Array("i", temp_filepath, "w+b") as array:
+        array.append(42)
+
+    with open(temp_filepath, "r+b") as file:
+        length_offset = struct.calcsize("<4sHB8sI")
+        file.seek(length_offset)
+        file.write(struct.pack("<Q", 1000))
+
+    with pytest.raises(ValueError, match="declares 1000 elements, but file only contains 1"):
+        Array("i", temp_filepath, "r+b")
+
+
 def test_extend_empty_list(temp_filepath):
     """Test extending with empty list."""
     array = Array("i", temp_filepath, "w+b")
