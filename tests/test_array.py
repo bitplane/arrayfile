@@ -1,10 +1,11 @@
-import pytest
-import io
 import gc
+import io
 import os
-import tempfile
 import struct
+import tempfile
 import weakref
+
+import pytest
 
 from arrayfile import Array
 
@@ -566,6 +567,14 @@ def test_dtype_mismatch(temp_filepath):
     # Try to open with 'd' dtype
     with pytest.raises(ValueError, match="File dtype 'i' does not match requested dtype 'd'"):
         Array("d", temp_filepath, "r+b")
+
+
+def test_dtype_too_long_for_header_is_rejected(temp_filepath):
+    dtype = "        i"
+    assert struct.calcsize(dtype) == struct.calcsize("i")
+
+    with pytest.raises(ValueError, match="dtype must be at most 8 ASCII bytes"):
+        Array(dtype, temp_filepath, "w+b")
 
 
 def test_element_size_mismatch(temp_filepath):

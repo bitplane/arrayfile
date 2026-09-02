@@ -1,5 +1,5 @@
-import mmap
 import io
+import mmap
 import os
 import struct
 import tempfile
@@ -9,6 +9,7 @@ import weakref
 
 class Array:
     CHUNK_SIZE_BYTES = 4096
+    MAX_DTYPE_LENGTH = 8
 
     # Header constants
     MAGIC = b"ARYF"
@@ -20,6 +21,13 @@ class Array:
 
     def __init__(self, dtype, filename=None, mode="r+b", initial_elements=0):
         self._lock = threading.Lock()
+
+        try:
+            dtype_bytes = dtype.encode("ascii")
+        except (AttributeError, UnicodeEncodeError) as error:
+            raise ValueError("dtype must be an ASCII struct format string") from error
+        if len(dtype_bytes) > self.MAX_DTYPE_LENGTH:
+            raise ValueError(f"dtype must be at most {self.MAX_DTYPE_LENGTH} ASCII bytes")
 
         if filename is None:
             fd, filename = tempfile.mkstemp()
@@ -40,13 +48,13 @@ class Array:
         if "w" in mode or not os.path.exists(filename):
             # Create or truncate file
             mode = "w+b"
-            self._file = open(filename, "w+b")
+            self._file = open(filename, "w+b")  # noqa: SIM115 - kept open for the Array lifetime
             self._len = 0
             self._allocate_capacity(initial_elements)
             self._write_header()
         else:
             # Open existing file
-            self._file = open(filename, mode)
+            self._file = open(filename, mode)  # noqa: SIM115 - kept open for the Array lifetime
             if not self._read_header():
                 raise ValueError("File does not have a valid array header")
 
@@ -125,7 +133,7 @@ class Array:
             return
 
         if state["writable"]:
-            dtype_bytes = state["dtype"].encode("ascii")[:8].ljust(8, b"\x00")
+            dtype_bytes = state["dtype"].encode("ascii").ljust(cls.MAX_DTYPE_LENGTH, b"\x00")
             header = struct.pack(
                 cls.HEADER_FORMAT,
                 cls.MAGIC,
@@ -144,8 +152,7 @@ class Array:
 
     def _write_header(self):
         """Write header to the beginning of the file."""
-        dtype_bytes = self._dtype.encode("ascii")[:8]  # Limit to 8 bytes
-        dtype_bytes = dtype_bytes.ljust(8, b"\x00")  # Pad with nulls
+        dtype_bytes = self._dtype.encode("ascii").ljust(self.MAX_DTYPE_LENGTH, b"\x00")
 
         header = struct.pack(
             self.HEADER_FORMAT,
@@ -176,6 +183,9 @@ class Array:
 
         if version != self.HEADER_VERSION:
             raise ValueError(f"Unsupported header version: {version}")
+
+        if dtype_len > self.MAX_DTYPE_LENGTH:
+            raise ValueError(f"File dtype length {dtype_len} exceeds header capacity")
 
         # Extract dtype string
         dtype = dtype_bytes[:dtype_len].decode("ascii")
