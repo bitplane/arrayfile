@@ -70,7 +70,15 @@ class Array:
             self._mmap = mmap.mmap(self._file.fileno(), 0, access=access)
 
         # Set up finalizer to ensure cleanup even if close() isn't called
-        self._finalizer = weakref.finalize(self, self.close)
+        self._finalizer_state = {
+            "dtype": self._dtype,
+            "element_size": self._element_size,
+            "file": self._file,
+            "length": self._len,
+            "mmap": self._mmap,
+            "writable": self._writable,
+        }
+        self._finalizer = weakref.finalize(self, self._finalize_resources, self._finalizer_state)
 
     def __len__(self):
         return self._len
@@ -104,6 +112,35 @@ class Array:
     def _ensure_writable(self):
         if not self._writable:
             raise io.UnsupportedOperation("Array is not writable")
+
+    @classmethod
+    def _finalize_resources(cls, state):
+        mapped_file = state["mmap"]
+        if mapped_file:
+            mapped_file.flush()
+            mapped_file.close()
+
+        file = state["file"]
+        if not file:
+            return
+
+        if state["writable"]:
+            dtype_bytes = state["dtype"].encode("ascii")[:8].ljust(8, b"\x00")
+            header = struct.pack(
+                cls.HEADER_FORMAT,
+                cls.MAGIC,
+                cls.HEADER_VERSION,
+                len(state["dtype"]),
+                dtype_bytes,
+                state["element_size"],
+                state["length"],
+            )
+            file.seek(0)
+            file.write(header)
+            file.truncate(cls.HEADER_SIZE + state["length"] * state["element_size"])
+            file.flush()
+
+        file.close()
 
     def _write_header(self):
         """Write header to the beginning of the file."""
@@ -186,6 +223,7 @@ class Array:
 
             self._mmap[offset : offset + self._element_size] = packed_value
             self._len += 1
+            self._finalizer_state["length"] = self._len
 
     def _allocate_capacity(self, min_elements):
         """Allocate capacity for at least min_elements, rounded up to chunk boundary."""
@@ -202,6 +240,7 @@ class Array:
 
         self._allocate_capacity(min_new_len)
         self._mmap = mmap.mmap(self._file.fileno(), 0)
+        self._finalizer_state["mmap"] = self._mmap
 
     def extend(self, iterable):
         values = list(iterable)
@@ -224,6 +263,7 @@ class Array:
                 offset += self._element_size
 
             self._len = new_len
+            self._finalizer_state["length"] = self._len
 
     def __contains__(self, value):
         for i in range(self._len):
@@ -248,10 +288,12 @@ class Array:
                 if self._mmap:
                     self._mmap.close()
                     self._mmap = None
+                    self._finalizer_state["mmap"] = None
                 if self._file:
                     self._file.truncate(0)
                 self._capacity = 0
                 self._capacity_bytes = 0
+                self._finalizer_state["length"] = self._len
             elif value > 1:
                 original_len = self._len
                 new_total_len = original_len * value
@@ -271,6 +313,7 @@ class Array:
                     dst_offset += chunk_size
 
                 self._len = new_total_len
+                self._finalizer_state["length"] = self._len
         return self
 
     def flush(self):
@@ -281,25 +324,10 @@ class Array:
                 self._write_header()
 
     def close(self):
-        if self._mmap:
-            # Ensure all writes are on disk before truncating
-            self._mmap.flush()
-            self._mmap.close()
-            self._mmap = None
-
-        if self._file:
-            # Update header with final length
-            if self._writable:
-                self._write_header()
-
-            # Only truncate if the file was opened in a writable mode
-            # and if the current size is greater than the actual data length
-            current_file_size = os.fstat(self._file.fileno()).st_size
-            actual_total_size = self.HEADER_SIZE + self._len * self._element_size
-            if self._writable and current_file_size > actual_total_size:
-                self._file.truncate(actual_total_size)
-            self._file.close()
-            self._file = None
+        if self._finalizer.alive:
+            self._finalizer()
+        self._mmap = None
+        self._file = None
 
     def __enter__(self):
         return self

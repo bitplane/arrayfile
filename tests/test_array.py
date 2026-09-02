@@ -1,8 +1,10 @@
 import pytest
 import io
+import gc
 import os
 import tempfile
 import struct
+import weakref
 
 from arrayfile import Array
 
@@ -254,6 +256,19 @@ def test_close_multiple_times(temp_filepath):
     array.append(1)
     array.close()
     array.close()  # Should not raise error
+
+
+def test_finalizer_releases_array_and_persists_data(temp_filepath):
+    array = Array("i", temp_filepath, "w+b")
+    array.append(42)
+    reference = weakref.ref(array)
+
+    del array
+    gc.collect()
+
+    assert reference() is None
+    with Array("i", temp_filepath, "rb") as reopened:
+        assert list(reopened) == [42]
 
 
 def test_context_manager(temp_filepath):
