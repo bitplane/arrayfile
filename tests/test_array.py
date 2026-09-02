@@ -207,6 +207,19 @@ def test_flush(temp_filepath):
     array_reopen.close()
 
 
+def test_flush_persists_length_in_header(temp_filepath):
+    array = Array("i", temp_filepath, "w+b")
+    array.append(42)
+    array.flush()
+
+    with open(temp_filepath, "rb") as file:
+        header = file.read(Array.HEADER_SIZE)
+
+    *_, length = struct.unpack(Array.HEADER_FORMAT, header)
+    assert length == 1
+    array.close()
+
+
 def test_close_truncates(temp_filepath):
     # Test that data persists after close
     array = Array("i", temp_filepath, "w+b", 100)

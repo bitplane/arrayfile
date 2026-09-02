@@ -256,8 +256,11 @@ class Array:
         return self
 
     def flush(self):
-        if self._mmap:
-            self._mmap.flush()
+        with self._lock:
+            if self._mmap:
+                self._mmap.flush()
+            if self._file:
+                self._write_header()
 
     def close(self):
         if self._mmap:
