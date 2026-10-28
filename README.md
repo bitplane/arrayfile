@@ -15,7 +15,8 @@ pip install arrayfile
 
 ### 🗑 Temporary Array
 
-This creates an array in your temp dir:
+This creates an array in your temp dir. Its file is deleted when the array is
+closed or garbage-collected. Arrays created with an explicit filename are kept:
 
 ```python
 from arrayfile import Array

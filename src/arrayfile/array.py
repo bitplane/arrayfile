@@ -50,7 +50,8 @@ class Array:
         if element_size == 0 or value_count != 1:
             raise ValueError("dtype must have positive size and contain exactly one value")
 
-        if filename is None:
+        temporary = filename is None
+        if temporary:
             fd, filename = tempfile.mkstemp()
             os.close(fd)
             mode = "w+b"  # Always create new temp files
@@ -66,37 +67,51 @@ class Array:
         self._capacity_bytes = 0  # Initialize _capacity_bytes here
         self._data_offset = self.HEADER_SIZE  # All data starts after header
 
-        if "w" in mode or "x" in mode:
-            # Mapping and header updates require random-access reads and writes.
-            mode = "x+b" if "x" in mode else "w+b"
-            self._file = open(filename, mode)  # noqa: SIM115 - kept open for the Array lifetime
-            self._len = 0
-            self._allocate_capacity(initial_elements)
-            self._write_header()
-        else:
-            # Open existing file
-            self._file = open(filename, mode)  # noqa: SIM115 - kept open for the Array lifetime
-            if not self._read_header():
-                raise ValueError("File does not have a valid array header")
+        try:
+            if "w" in mode or "x" in mode:
+                # Mapping and header updates require random-access reads and writes.
+                mode = "x+b" if "x" in mode else "w+b"
+                self._file = open(filename, mode)  # noqa: SIM115 - kept open for the Array lifetime
+                self._len = 0
+                self._allocate_capacity(initial_elements)
+                self._write_header()
+            else:
+                # Open existing file
+                self._file = open(filename, mode)  # noqa: SIM115 - kept open for the Array lifetime
+                if not self._read_header():
+                    raise ValueError("File does not have a valid array header")
 
-            current_file_size = os.fstat(self._file.fileno()).st_size
-            data_size = current_file_size - self.HEADER_SIZE
-            required_data_size = self._len * self._element_size
-            if required_data_size > data_size:
-                raise ValueError(
-                    f"Array header declares {self._len} elements, but file only contains "
-                    f"{data_size // self._element_size}"
-                )
+                current_file_size = os.fstat(self._file.fileno()).st_size
+                data_size = current_file_size - self.HEADER_SIZE
+                required_data_size = self._len * self._element_size
+                if required_data_size > data_size:
+                    raise ValueError(
+                        f"Array header declares {self._len} elements, but file only contains "
+                        f"{data_size // self._element_size}"
+                    )
 
-            self._capacity_bytes = data_size
-            self._capacity = data_size // self._element_size
+                self._capacity_bytes = data_size
+                self._capacity = data_size // self._element_size
 
-        self._writable = any(flag in mode for flag in "+wa")
+            self._writable = any(flag in mode for flag in "+wa")
 
-        # Only mmap if the file has a non-zero size
-        if self._capacity_bytes > 0:
-            access = mmap.ACCESS_WRITE if self._writable else mmap.ACCESS_READ
-            self._mmap = mmap.mmap(self._file.fileno(), 0, access=access)
+            # Only mmap if the file has a non-zero size
+            if self._capacity_bytes > 0:
+                access = mmap.ACCESS_WRITE if self._writable else mmap.ACCESS_READ
+                self._mmap = mmap.mmap(self._file.fileno(), 0, access=access)
+
+        except BaseException:
+            try:
+                if self._mmap is not None:
+                    self._mmap.close()
+            finally:
+                try:
+                    if self._file is not None:
+                        self._file.close()
+                finally:
+                    if temporary:
+                        os.unlink(filename)
+            raise
 
         # Set up finalizer to ensure cleanup even if close() isn't called
         self._finalizer_state = {
@@ -106,6 +121,7 @@ class Array:
             "length": self._len,
             "mmap": self._mmap,
             "writable": self._writable,
+            "temporary_path": filename if temporary else None,
         }
         self._finalizer = weakref.finalize(self, self._finalize_resources, self._finalizer_state)
 
@@ -171,8 +187,15 @@ class Array:
                 file.truncate(cls.HEADER_SIZE + state["length"] * state["element_size"])
                 file.flush()
         finally:
-            if file is not None:
-                file.close()
+            try:
+                if file is not None:
+                    file.close()
+            finally:
+                if state["temporary_path"] is not None:
+                    try:
+                        os.unlink(state["temporary_path"])
+                    except FileNotFoundError:
+                        pass
 
     def _write_header(self):
         """Write header to the beginning of the file."""

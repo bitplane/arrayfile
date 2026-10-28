@@ -19,20 +19,13 @@ def temp_filepath():
 
 
 def test_init_new_file_no_filename():
-    # Test case for filename=None, allowing Array to create its own temp file
-    array = None
-    try:
-        array = Array("i", None)  # Use default initial_elements=0
-        assert array._filename is not None
+    with Array("i") as array:
+        filename = array._filename
+        assert os.path.exists(filename)
         assert array._dtype == "i"
         assert array._element_size == struct.calcsize("i")
         assert len(array) == 0
-
-    finally:
-        if array:
-            array.close()
-        elif array and array._filename and os.path.exists(array._filename):
-            os.remove(array._filename)
+    assert not os.path.exists(filename)
 
 
 @pytest.mark.parametrize(
@@ -755,3 +748,31 @@ def test_single_value_struct_formats_round_trip(tmp_path, dtype, value):
         array.append(value)
     with Array(dtype, path, "rb") as array:
         assert array[0] == value
+
+
+@pytest.mark.parametrize("cleanup", ["close", "gc"])
+def test_temporary_array_removes_file(cleanup):
+    array = Array("i")
+    array.append(42)
+    filename = array._filename
+    reference = weakref.ref(array)
+    if cleanup == "close":
+        array.close()
+        array.close()
+    else:
+        del array
+        gc.collect()
+        assert reference() is None
+    assert not os.path.exists(filename)
+
+
+def test_failed_temporary_initialization_removes_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+
+    def fail(*args):
+        raise OSError("allocation failed")
+
+    monkeypatch.setattr(Array, "_allocate_capacity", fail)
+    with pytest.raises(OSError, match="allocation failed"):
+        Array("i")
+    assert list(tmp_path.iterdir()) == []
