@@ -1,6 +1,7 @@
 import io
 import mmap
 import os
+import re
 import struct
 import tempfile
 import threading
@@ -35,6 +36,20 @@ class Array:
         if len(dtype_bytes) > self.MAX_DTYPE_LENGTH:
             raise ValueError(f"dtype must be at most {self.MAX_DTYPE_LENGTH} ASCII bytes")
 
+        try:
+            element_size = struct.calcsize(dtype)
+        except struct.error as error:
+            raise ValueError("dtype must be a valid struct format string") from error
+        value_count = 0
+        for count, code in re.findall(r"(\d*)([A-Za-z?])", dtype):
+            repeat = int(count) if count else 1
+            if code == "p" and repeat == 0:
+                raise ValueError("dtype cannot contain a zero-length Pascal string")
+            if code != "x":
+                value_count += 1 if code in "sp" else repeat
+        if element_size == 0 or value_count != 1:
+            raise ValueError("dtype must have positive size and contain exactly one value")
+
         if filename is None:
             fd, filename = tempfile.mkstemp()
             os.close(fd)
@@ -43,7 +58,7 @@ class Array:
         self._filename = filename
         self._dtype = dtype
         self._dtype_format = dtype
-        self._element_size = struct.calcsize(dtype)
+        self._element_size = element_size
         self._file = None
         self._mmap = None
         self._len = 0

@@ -736,3 +736,21 @@ def test_multiply_empty_array_then_append(tmp_path, empty_state):
         array.append(42)
     with Array("i", path, "rb") as reopened:
         assert list(reopened) == [42]
+
+
+@pytest.mark.parametrize("dtype", ["", "0i", "x", "2i", "ii", "0s", "x0p", "invalid"])
+def test_invalid_dtype_preserves_destination(tmp_path, dtype):
+    path = tmp_path / "array"
+    path.write_bytes(b"existing contents")
+    with pytest.raises(ValueError, match="dtype"):
+        Array(dtype, path, "w+b")
+    assert path.read_bytes() == b"existing contents"
+
+
+@pytest.mark.parametrize("dtype,value", [("<i", 42), ("xi", 42), ("3s", b"abc"), ("4p", b"abc")])
+def test_single_value_struct_formats_round_trip(tmp_path, dtype, value):
+    path = tmp_path / "array"
+    with Array(dtype, path, "w+b") as array:
+        array.append(value)
+    with Array(dtype, path, "rb") as array:
+        assert array[0] == value
