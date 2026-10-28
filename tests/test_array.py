@@ -320,7 +320,8 @@ def test_different_dtypes(temp_filepath, dtype, test_value):
     array = Array(dtype, temp_filepath, "w+b")
     array.append(test_value)
     assert len(array) == 1
-    assert array[0] == pytest.approx(test_value) if dtype in ["f", "d"] else test_value
+    expected = pytest.approx(test_value) if dtype in ["f", "d"] else test_value
+    assert array[0] == expected
     array.close()
 
 
