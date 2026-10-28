@@ -7,12 +7,11 @@ authors = [
 ]
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "CC0"} # wtfpl
+license = {file = "LICENSE.md"}
 keywords = ["logging", "terminal", "scrollback", "indexing"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
