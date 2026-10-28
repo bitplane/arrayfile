@@ -692,3 +692,29 @@ def test_close_releases_handles_after_flush_error(tmp_path):
     mapping.close.assert_called_once()
     assert file.closed
     array.close()
+
+
+@pytest.mark.parametrize("mode", ["rb", "r+b", "rb+"])
+def test_read_modes_require_existing_file(tmp_path, mode):
+    path = tmp_path / "missing"
+    with pytest.raises(FileNotFoundError):
+        Array("i", path, mode)
+    assert not path.exists()
+
+
+def test_exclusive_create_preserves_existing_file(tmp_path):
+    path = tmp_path / "array"
+    with Array("i", path, "xb") as array:
+        array.append(42)
+    original = path.read_bytes()
+    with pytest.raises(FileExistsError):
+        Array("i", path, "x+b")
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("mode", ["r", "invalid", "wwb", None])
+def test_invalid_mode_does_not_create_file(tmp_path, mode):
+    path = tmp_path / "array"
+    with pytest.raises(ValueError, match="mode"):
+        Array("i", path, mode)
+    assert not path.exists()

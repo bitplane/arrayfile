@@ -21,8 +21,12 @@ class Array:
 
     def __init__(self, dtype, filename=None, mode="r+b", initial_elements=0):
         self._lock = threading.Lock()
-        if "a" in mode:
+        if isinstance(mode, str) and "a" in mode:
             raise ValueError("Append mode is not supported; use r+b and append()")
+        if mode not in ("rb", "r+b", "rb+", "wb", "w+b", "wb+", "xb", "x+b", "xb+"):
+            raise ValueError("mode must be a binary read, write, or exclusive-create mode")
+        if filename is None and mode == "rb":
+            raise ValueError("Read-only mode requires a filename")
 
         try:
             dtype_bytes = dtype.encode("ascii")
@@ -47,10 +51,10 @@ class Array:
         self._capacity_bytes = 0  # Initialize _capacity_bytes here
         self._data_offset = self.HEADER_SIZE  # All data starts after header
 
-        if "w" in mode or not os.path.exists(filename):
-            # Create or truncate file
-            mode = "w+b"
-            self._file = open(filename, "w+b")  # noqa: SIM115 - kept open for the Array lifetime
+        if "w" in mode or "x" in mode:
+            # Mapping and header updates require random-access reads and writes.
+            mode = "x+b" if "x" in mode else "w+b"
+            self._file = open(filename, mode)  # noqa: SIM115 - kept open for the Array lifetime
             self._len = 0
             self._allocate_capacity(initial_elements)
             self._write_header()
