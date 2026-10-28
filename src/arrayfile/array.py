@@ -332,6 +332,8 @@ class Array:
                 self._finalizer_state["length"] = self._len
             elif value > 1:
                 original_len = self._len
+                if original_len == 0:
+                    return self
                 new_total_len = original_len * value
 
                 # Resize if needed

@@ -718,3 +718,21 @@ def test_invalid_mode_does_not_create_file(tmp_path, mode):
     with pytest.raises(ValueError, match="mode"):
         Array("i", path, mode)
     assert not path.exists()
+
+
+@pytest.mark.parametrize("empty_state", ["new", "reopened", "cleared"])
+def test_multiply_empty_array_then_append(tmp_path, empty_state):
+    path = tmp_path / "array"
+    array = Array("i", path, "w+b")
+    if empty_state == "reopened":
+        array.close()
+        array = Array("i", path)
+    elif empty_state == "cleared":
+        array.append(1)
+        array *= 0
+    with array:
+        array *= 2
+        assert list(array) == []
+        array.append(42)
+    with Array("i", path, "rb") as reopened:
+        assert list(reopened) == [42]
