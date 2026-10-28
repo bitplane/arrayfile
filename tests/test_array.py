@@ -651,3 +651,44 @@ def test_append_mode_rejected_without_modifying_file(tmp_path, mode):
     with pytest.raises(ValueError, match="Append mode"):
         Array("i", path, mode)
     assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("failure", ["allocation", "mapping"])
+def test_resize_failure_preserves_existing_values(tmp_path, monkeypatch, failure):
+    import arrayfile.array as implementation
+
+    path = tmp_path / "array"
+    array = Array("i", path, "w+b")
+    array.append(42)
+    file = array._file
+    with monkeypatch.context() as patch:
+
+        def fail(*args, **kwargs):
+            raise OSError("allocation failed")
+
+        if failure == "allocation":
+            patch.setattr(array, "_allocate_capacity", fail)
+        else:
+            patch.setattr(implementation.mmap, "mmap", fail)
+        with pytest.raises(OSError, match="allocation failed"):
+            array.extend(range(2000))
+    array.close()
+    assert file.closed
+    with Array("i", path, "rb") as reopened:
+        assert list(reopened) == [42]
+
+
+def test_close_releases_handles_after_flush_error(tmp_path):
+    from unittest.mock import Mock
+
+    array = Array("i", tmp_path / "array", "w+b")
+    file = array._file
+    array._mmap.close()
+    mapping = Mock()
+    mapping.flush.side_effect = OSError("flush failed")
+    array._finalizer_state["mmap"] = mapping
+    with pytest.raises(OSError, match="flush failed"):
+        array.close()
+    mapping.close.assert_called_once()
+    assert file.closed
+    array.close()

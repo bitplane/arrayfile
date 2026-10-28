@@ -126,31 +126,34 @@ class Array:
     @classmethod
     def _finalize_resources(cls, state):
         mapped_file = state["mmap"]
-        if mapped_file:
-            mapped_file.flush()
-            mapped_file.close()
-
         file = state["file"]
-        if not file:
-            return
+        try:
+            if mapped_file is not None:
+                try:
+                    mapped_file.flush()
+                finally:
+                    mapped_file.close()
+            if file is None:
+                return
 
-        if state["writable"]:
-            dtype_bytes = state["dtype"].encode("ascii").ljust(cls.MAX_DTYPE_LENGTH, b"\x00")
-            header = struct.pack(
-                cls.HEADER_FORMAT,
-                cls.MAGIC,
-                cls.HEADER_VERSION,
-                len(state["dtype"]),
-                dtype_bytes,
-                state["element_size"],
-                state["length"],
-            )
-            file.seek(0)
-            file.write(header)
-            file.truncate(cls.HEADER_SIZE + state["length"] * state["element_size"])
-            file.flush()
-
-        file.close()
+            if state["writable"]:
+                dtype_bytes = state["dtype"].encode("ascii").ljust(cls.MAX_DTYPE_LENGTH, b"\x00")
+                header = struct.pack(
+                    cls.HEADER_FORMAT,
+                    cls.MAGIC,
+                    cls.HEADER_VERSION,
+                    len(state["dtype"]),
+                    dtype_bytes,
+                    state["element_size"],
+                    state["length"],
+                )
+                file.seek(0)
+                file.write(header)
+                file.truncate(cls.HEADER_SIZE + state["length"] * state["element_size"])
+                file.flush()
+        finally:
+            if file is not None:
+                file.close()
 
     def _write_header(self):
         """Write header to the beginning of the file."""
@@ -242,17 +245,34 @@ class Array:
         bytes_needed = min_elements * self._element_size + self.HEADER_SIZE
         chunks_needed = (bytes_needed + self.CHUNK_SIZE_BYTES - 1) // self.CHUNK_SIZE_BYTES
         total_file_size = chunks_needed * self.CHUNK_SIZE_BYTES
+        self._file.truncate(total_file_size)
         self._capacity_bytes = total_file_size - self.HEADER_SIZE
         self._capacity = self._capacity_bytes // self._element_size
-        self._file.truncate(total_file_size)
 
     def _resize(self, min_new_len):
-        if self._mmap:
+        old_capacity = self._capacity
+        old_capacity_bytes = self._capacity_bytes
+        if self._mmap is not None:
             self._mmap.close()
+        self._mmap = None
+        self._finalizer_state["mmap"] = None
 
-        self._allocate_capacity(min_new_len)
-        self._mmap = mmap.mmap(self._file.fileno(), 0)
-        self._finalizer_state["mmap"] = self._mmap
+        try:
+            self._allocate_capacity(min_new_len)
+            self._mmap = mmap.mmap(self._file.fileno(), 0)
+        except Exception:
+            self._capacity = old_capacity
+            self._capacity_bytes = old_capacity_bytes
+            # Restore access to existing values if possible. Cleanup must remain
+            # usable even when the operating system cannot create any mapping.
+            if old_capacity_bytes:
+                try:
+                    self._mmap = mmap.mmap(self._file.fileno(), 0)
+                except OSError:
+                    pass
+            raise
+        finally:
+            self._finalizer_state["mmap"] = self._mmap
 
     def extend(self, iterable):
         values = list(iterable)
@@ -336,10 +356,13 @@ class Array:
                 self._write_header()
 
     def close(self):
-        if self._finalizer.alive:
-            self._finalizer()
-        self._mmap = None
-        self._file = None
+        with self._lock:
+            try:
+                if self._finalizer.alive:
+                    self._finalizer()
+            finally:
+                self._mmap = None
+                self._file = None
 
     def __enter__(self):
         return self
