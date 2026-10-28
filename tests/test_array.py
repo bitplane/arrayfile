@@ -640,3 +640,14 @@ def test_imul_triggers_resize(temp_filepath):
         assert array[i + 1000] == i
         assert array[i + 2000] == i
     array.close()
+
+
+@pytest.mark.parametrize("mode", ["ab", "a+b", "ab+"])
+def test_append_mode_rejected_without_modifying_file(tmp_path, mode):
+    path = tmp_path / "array"
+    with Array("i", path, "w+b") as array:
+        array.append(1)
+    original = path.read_bytes()
+    with pytest.raises(ValueError, match="Append mode"):
+        Array("i", path, mode)
+    assert path.read_bytes() == original

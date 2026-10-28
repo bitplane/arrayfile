@@ -21,6 +21,8 @@ class Array:
 
     def __init__(self, dtype, filename=None, mode="r+b", initial_elements=0):
         self._lock = threading.Lock()
+        if "a" in mode:
+            raise ValueError("Append mode is not supported; use r+b and append()")
 
         try:
             dtype_bytes = dtype.encode("ascii")
